@@ -3,8 +3,8 @@ import  gym.spaces
 import  itertools
 import  numpy                       as np
 import  random
-import  tensorflow                  as tf
-import  tensorflow.contrib.layers   as layers
+# import  tensorflow                  as tf
+# import  tensorflow.contrib.layers   as layers
 from    collections                 import namedtuple
 from    dqn_utils                   import *
 import pickle
@@ -14,7 +14,6 @@ OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedu
 def learn(env,
           q_func,
           optimizer_spec,
-          session,
           exploration=LinearSchedule(1000000, 0.1),
           stopping_criterion=None,
           replay_buffer_size=1000000,

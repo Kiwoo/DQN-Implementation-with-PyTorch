@@ -4,32 +4,71 @@ from gym import wrappers
 import os.path as osp
 import random
 import numpy as np
-import tensorflow as tf
-import tensorflow.contrib.layers as layers
-
+# import tensorflow as tf
+# import tensorflow.contrib.layers as layers
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 import dqn
 from dqn_utils import *
 from atari_wrappers import *
 
 
-def atari_model(img_in, num_actions, scope, reuse=False):
-    # as described in https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
-    with tf.variable_scope(scope, reuse=reuse):
-        out = img_in
-        with tf.variable_scope("convnet"):
-            # original architecture
-            out = layers.convolution2d(out, num_outputs=32, kernel_size=8, stride=4, activation_fn=tf.nn.relu)
-            out = layers.convolution2d(out, num_outputs=64, kernel_size=4, stride=2, activation_fn=tf.nn.relu)
-            out = layers.convolution2d(out, num_outputs=64, kernel_size=3, stride=1, activation_fn=tf.nn.relu)
-        out = layers.flatten(out)
-        with tf.variable_scope("action_value"):
-            out = layers.fully_connected(out, num_outputs=512,         activation_fn=tf.nn.relu)
-            out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
+# def atari_model(img_in, num_actions, scope, reuse=False):
+#     # as described in https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
+#     with tf.variable_scope(scope, reuse=reuse):
+#         out = img_in
+#         with tf.variable_scope("convnet"):
+#             # original architecture
+#             out = layers.convolution2d(out, num_outputs=32, kernel_size=8, stride=4, activation_fn=tf.nn.relu)
+#             out = layers.convolution2d(out, num_outputs=64, kernel_size=4, stride=2, activation_fn=tf.nn.relu)
+#             out = layers.convolution2d(out, num_outputs=64, kernel_size=3, stride=1, activation_fn=tf.nn.relu)
+#         out = layers.flatten(out)
+#         with tf.variable_scope("action_value"):
+#             out = layers.fully_connected(out, num_outputs=512,         activation_fn=tf.nn.relu)
+#             out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
 
-        return out
+#         return out
 
-def atari_learn(env,
-                session,
+def _cnn_to_linear(seq, input_shape=None):
+    # From https://github.com/rarilurelo/pytorch_a3c
+    if isinstance(input_shape, tuple):
+        input_shape = list(input_shape)
+    if input_shape is None:
+        assert False, 'input_shape must be determined'
+    for cnn in seq:
+        if not isinstance(cnn, nn.Conv2d):
+            continue
+        kernel_size = cnn.kernel_size
+        stride = cnn.stride
+        for i, l in enumerate(input_shape):
+            input_shape[i] = (l - kernel_size[i] + stride[i])//stride[i]
+        channel_size = cnn.out_channels
+    return input_shape[0] * input_shape[1] * channel_size
+
+class atari_model(nn.Module):
+    def __init__(self, frame_num, input_shape=(84, 84), num_actions):
+        super(atari_model, self).__init__()
+        self.f = nn.Sequential(
+            nn.Conv2d(frame_num, 32, 8, 4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 4, 2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, 1),
+            nn.ReLU()
+            )
+        self.linear_dim = _cnn_to_linear(self.f, input_shape)
+        self.fc4 = nn.Linear(self.linear_dim, 512)
+        self.fc5 = nn.Linear(512, num_actions)
+
+    def forward(self, x):
+        x = self.f(x)
+        x = x.view(-1, self.linear_dim)
+        x = F.relu(self.fc4(x))
+        return self.fc5(x)
+
+
+def atari_learn(env,                
                 num_timesteps):
     # This is just a rough estimate
     num_iterations = float(num_timesteps) / 4.0
@@ -42,7 +81,7 @@ def atari_learn(env,
                                     ],
                                     outside_value=5e-5 * lr_multiplier)
     optimizer = dqn.OptimizerSpec(
-        constructor=tf.train.AdamOptimizer,
+        constructor=optim.Adam,
         kwargs=dict(epsilon=1e-4),
         lr_schedule=lr_schedule
     )
@@ -64,7 +103,6 @@ def atari_learn(env,
         env,
         q_func=atari_model,
         optimizer_spec=optimizer,
-        session=session,
         exploration=exploration_schedule,
         stopping_criterion=stopping_criterion,
         replay_buffer_size=1000000,
@@ -78,29 +116,39 @@ def atari_learn(env,
     )
     env.close()
 
-def get_available_gpus():
-    from tensorflow.python.client import device_lib
-    local_device_protos = device_lib.list_local_devices()
-    return [x.physical_device_desc for x in local_device_protos if x.device_type == 'GPU']
+# def get_available_gpus():
+#     from tensorflow.python.client import device_lib
+#     local_device_protos = device_lib.list_local_devices()
+#     return [x.physical_device_desc for x in local_device_protos if x.device_type == 'GPU']
+
+# def set_global_seeds(i):
+#     try:
+#         import tensorflow as tf
+#     except ImportError:
+#         pass
+#     else:
+#         tf.set_random_seed(i) 
+#     np.random.seed(i)
+#     random.seed(i)
 
 def set_global_seeds(i):
     try:
-        import tensorflow as tf
+        import torch
     except ImportError:
         pass
     else:
-        tf.set_random_seed(i) 
+        torch.manual_seed(i)
     np.random.seed(i)
     random.seed(i)
 
-def get_session():
-    tf.reset_default_graph()
-    tf_config = tf.ConfigProto(
-        inter_op_parallelism_threads=1,
-        intra_op_parallelism_threads=1)
-    session = tf.Session(config=tf_config)
-    print("AVAILABLE GPUS: ", get_available_gpus())
-    return session
+# def get_session():
+#     tf.reset_default_graph()
+#     tf_config = tf.ConfigProto(
+#         inter_op_parallelism_threads=1,
+#         intra_op_parallelism_threads=1)
+#     session = tf.Session(config=tf_config)
+#     print("AVAILABLE GPUS: ", get_available_gpus())
+#     return session
 
 def get_env(task, seed):
     env_id = task.env_id
@@ -126,8 +174,8 @@ def main():
     # Run training
     seed = 0 # Use a seed of zero (you may want to randomize the seed!)
     env = get_env(task, seed)
-    session = get_session()
-    atari_learn(env, session, num_timesteps=task.max_timesteps)
+    # session = get_session()
+    atari_learn(env, num_timesteps=task.max_timesteps)
 
 if __name__ == "__main__":
     main()
