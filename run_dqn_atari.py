@@ -47,24 +47,21 @@ def _cnn_to_linear(seq, input_shape=None):
     return input_shape[0] * input_shape[1] * channel_size
 
 class atari_model(nn.Module):
-    def __init__(self, frame_num, input_shape=(84, 84), num_actions):
+    def __init__(self, in_channels=4, num_actions=18):
         super(atari_model, self).__init__()
-        self.f = nn.Sequential(
-            nn.Conv2d(frame_num, 32, 8, 4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 4, 2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, 1),
-            nn.ReLU()
-            )
-        self.linear_dim = _cnn_to_linear(self.f, input_shape)
-        self.fc4 = nn.Linear(self.linear_dim, 512)
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.fc4 = nn.Linear(7 * 7 * 64, 512)
         self.fc5 = nn.Linear(512, num_actions)
 
     def forward(self, x):
-        x = self.f(x)
-        x = x.view(-1, self.linear_dim)
-        x = F.relu(self.fc4(x))
+        # print x
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.fc4(x.view(x.size(0), -1)))
         return self.fc5(x)
 
 
@@ -72,7 +69,7 @@ def atari_learn(env,
                 num_timesteps):
     # This is just a rough estimate
     num_iterations = float(num_timesteps) / 4.0
-
+    LEARNING_RATE = 5e-5
     lr_multiplier = 3.0
     lr_schedule = PiecewiseSchedule([
                                          (0,                   1e-4 * lr_multiplier),
@@ -82,9 +79,9 @@ def atari_learn(env,
                                     outside_value=5e-5 * lr_multiplier)
     optimizer = dqn.OptimizerSpec(
         constructor=optim.Adam,
-        kwargs=dict(epsilon=1e-4),
-        lr_schedule=lr_schedule
+        kwargs=dict(lr=LEARNING_RATE, eps=1e-4)
     )
+
 
     def stopping_criterion(env, t):
         # notice that here t is the number of steps of the wrapped env,

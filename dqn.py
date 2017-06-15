@@ -8,8 +8,23 @@ import  random
 from    collections                 import namedtuple
 from    dqn_utils                   import *
 import pickle
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.autograd as autograd
 
-OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
+
+OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs"])
+
+
+USE_CUDA = torch.cuda.is_available()
+dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+
+class Variable(autograd.Variable):
+    def __init__(self, data, *args, **kwargs):
+        if USE_CUDA:
+            data = data.cuda()
+        super(Variable, self).__init__(data, *args, **kwargs)
 
 def learn(env,
           q_func,
@@ -83,67 +98,27 @@ def learn(env,
 
     if len(env.observation_space.shape) == 1:
         # This means we are running on low-dimensional observations (e.g. RAM)
-        input_shape = env.observation_space.shape
+        input_arg = env.observation_space.shape[0]
     else:
         img_h, img_w, img_c = env.observation_space.shape
-        input_shape = (img_h, img_w, frame_history_len * img_c)
+        input_arg = frame_history_len * img_c
     num_actions = env.action_space.n
 
-    # set up placeholders
-    # placeholder for current observation (or state)
-    obs_t_ph              = tf.placeholder(tf.uint8,    [None] + list(input_shape))
-    # placeholder for current action
-    act_t_ph              = tf.placeholder(tf.int32,    [None])
-    # placeholder for current reward
-    rew_t_ph              = tf.placeholder(tf.float32,  [None])
-    # placeholder for next observation (or state)
-    obs_tp1_ph            = tf.placeholder(tf.uint8,    [None] + list(input_shape))
-    # placeholder for end of episode mask
-    # this value is 1 if the next state corresponds to the end of an episode,
-    # in which case there is no Q-value at the next state; at the end of an
-    # episode, only the current state reward contributes to the target, not the
-    # next state Q-value (i.e. target is just rew_t_ph, not rew_t_ph + gamma * q_tp1)
-    done_mask_ph          = tf.placeholder(tf.float32, [None])
 
-    # casting to float on GPU ensures lower data transfer times.
-    obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
-    obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
+    q_values = q_func(input_arg, num_actions).type(dtype)
+    target_q_values = q_func(input_arg, num_actions).type(dtype)
 
-    # Here, you should fill in your own code to compute the Bellman error. This requires
-    # evaluating the current and next Q-values and constructing the corresponding error.
-    # TensorFlow will differentiate this error for you, you just need to pass it to the
-    # optimizer. See assignment text for details.
-    # Your code should produce one scalar-valued tensor: total_error
-    # This will be passed to the optimizer in the provided code below.
-    # Your code should also produce two collections of variables:
-    # q_func_vars
-    # target_q_func_vars
-    # These should hold all of the variables of the Q-function network and target network,
-    # respectively. A convenient way to get these is to make use of TF's "scope" feature.
-    # For example, you can create your Q-function network with the scope "q_func" like this:
-    # <something> = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
-    # And then you can obtain the variables like this:
-    # q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
-    # Older versions of TensorFlow may require using "VARIABLES" instead of "GLOBAL_VARIABLES"
-    ######
-    
-    # YOUR CODE HERE
+    optimizer = optimizer_spec.constructor(q_values.parameters(), **optimizer_spec.kwargs)
+    replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
 
-    q_values = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
-    target_q_values = q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False)
-
-    q_index = tf.range(batch_size) * tf.shape(q_values)[1] + act_t_ph
-    q_a_values = tf.gather(tf.reshape(q_values, [-1]), q_index)
-
-    act_tp1_ph = tf.cast(tf.argmax(target_q_values, axis=1), tf.int32)
-    target_q_index = tf.range(batch_size) * tf.shape(target_q_values)[1] + act_tp1_ph
-    q_a_vales_tp1 = tf.gather(tf.reshape(target_q_values, [-1]), target_q_index)
-
-    target_values = rew_t_ph + (1-done_mask_ph) * gamma * q_a_vales_tp1
-    total_error = tf.reduce_mean(tf.squared_difference( target_values, q_a_values ))
-
-    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
-    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
+    def select_epilson_greedy_action(model, obs, t):
+        sample = random.random()
+        eps_threshold = exploration.value(t)
+        if sample > eps_threshold:
+            obs = torch.from_numpy(obs).type(dtype).unsqueeze(0) / 255.0
+            return model(Variable(obs, volatile=True)).data.max(1)[1].cpu()
+        else:
+            return torch.IntTensor([[random.randrange(num_actions)]])
 
     ######
 
@@ -159,30 +134,30 @@ def learn(env,
 
 
     # construct optimization op (with gradient clipping)
-    learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
-    optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
-    train_fn = minimize_and_clip(optimizer, total_error,
-                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+    # learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
+    # optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
+    # train_fn = minimize_and_clip(optimizer, total_error,
+    #              var_list=q_func_vars, clip_val=grad_norm_clipping)
 
-    # update_target_fn will be called periodically to copy Q network to target Q network
-    update_target_fn = []
-    for var, var_target in zip(sorted(q_func_vars,        key=lambda v: v.name),
-                               sorted(target_q_func_vars, key=lambda v: v.name)):
-        update_target_fn.append(var_target.assign(var))
-    update_target_fn = tf.group(*update_target_fn)
+    # # update_target_fn will be called periodically to copy Q network to target Q network
+    # update_target_fn = []
+    # for var, var_target in zip(sorted(q_func_vars,        key=lambda v: v.name),
+    #                            sorted(target_q_func_vars, key=lambda v: v.name)):
+    #     update_target_fn.append(var_target.assign(var))
+    # update_target_fn = tf.group(*update_target_fn)
 
     # construct the replay buffer
-    replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
+    
 
     ###############
     # RUN ENV     #
     ###############
-    model_initialized = False
+    # model_initialized = True
     num_param_updates = 0
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     last_obs                 = env.reset()
-    LOG_EVERY_N_STEPS        = 10000
+    LOG_EVERY_N_STEPS        = 1000
     SAVE_EVERY_N_STEPS       = 100000 
 
     for t in itertools.count():
@@ -225,21 +200,30 @@ def learn(env,
         # YOUR CODE HERE
         # It seems like Tensorflow version >= 1.0 support interdependent variable initialization. Right?
 
-        if model_initialized == False:
-            session.run(tf.global_variables_initializer())
-            model_initialized = True
+        # if model_initialized == False:
+        #     session.run(tf.global_variables_initializer())
+        #     model_initialized = True
 
         ret = replay_buffer.store_frame( last_obs )
+
         obs = replay_buffer.encode_recent_observation()
+
+        # q_value = q_func(Variable((torch.from_numpy(obs).type(dtype).unsqueeze(0) / 255.0), volatile = True))
+        # argmax_action = q_value.data.max(1)[1].cpu()
       
-        q_value = session.run(q_values, {obs_t_ph: [obs]})
-        argmax_action = np.argmax(q_value)
+        # # q_value = session.run(q_values, {obs_t_ph: [obs]})
+        # # argmax_action = np.argmax(q_value)
 
-        epsilon = exploration.value(t)
-        prob_action = np.ones(num_actions, dtype=float) * epsilon / (num_actions-1)
-        prob_action[argmax_action] = 1-epsilon
+        # epsilon = exploration.value(t)
+        # prob_action = np.ones(num_actions, dtype=float) * epsilon / (num_actions-1)
+        # prob_action[argmax_action] = 1-epsilon
 
-        action = np.random.choice(np.arange(num_actions), p=np.squeeze(prob_action) )
+        # action = np.random.choice(np.arange(num_actions), p=np.squeeze(prob_action) )
+        action = select_epilson_greedy_action(q_values, obs, t)[0, 0]
+        # if t > learning_starts:
+        #     action = select_epilson_greedy_action(q_values, obs, t)[0, 0]
+        # else:
+        #     action = random.randrange(num_actions)
 
         last_obs, reward, done, _ = env.step(action)
 
@@ -299,13 +283,29 @@ def learn(env,
             # YOUR CODE HERE
 
             # 3.a: sample a batch of transitions
+
+            # obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
             obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
+            # Convert numpy nd_array to torch variables for calculation
+            obs_t_batch = Variable(torch.from_numpy(obs_t_batch).type(dtype) / 255.0)
+            act_batch = Variable(torch.from_numpy(act_batch).long())
+            rew_batch = Variable(torch.from_numpy(rew_batch))
+            obs_tp1_batch = Variable(torch.from_numpy(obs_tp1_batch).type(dtype) / 255.0)
+            not_done_mask = Variable(torch.from_numpy(1 - done_mask)).type(dtype)
+
+            if USE_CUDA:
+                act_batch = act_batch.cuda()
+                rew_batch = rew_batch.cuda()
 
             # 3.b: initialize model
             
             # change to global variable initializer above.
 
             # 3.c: train the model
+
+
+
+
             # feed_dict = {obs_t_ph: obs_t_batch, 
             #              act_t_ph:       act_batch, 
             #                 rew_t_ph:       rew_batch, 
@@ -313,16 +313,42 @@ def learn(env,
             #                 done_mask_ph:   done_mask,
             #                 learning_rate:  optimizer_spec.lr_schedule.value(t)  }
 
-            session.run( [train_fn, total_error], feed_dict={obs_t_ph: obs_t_batch, 
-                                                             act_t_ph: act_batch, 
-                                                             rew_t_ph: rew_batch, 
-                                                             obs_tp1_ph: obs_tp1_batch, 
-                                                             done_mask_ph: done_mask,
-                                                             learning_rate: optimizer_spec.lr_schedule.value(t)})
+            # session.run( [train_fn, total_error], feed_dict={obs_t_ph: obs_t_batch, 
+            #                                                  act_t_ph: act_batch, 
+            #                                                  rew_t_ph: rew_batch, 
+            #                                                  obs_tp1_ph: obs_tp1_batch, 
+            #                                                  done_mask_ph: done_mask,
+            #                                                  learning_rate: optimizer_spec.lr_schedule.value(t)})
+            # Compute current Q value, q_func takes only state and output value for every state-action pair
+            # We choose Q based on action taken.
+            q_a_values = q_values(obs_t_batch).gather(1, act_batch.unsqueeze(1))
+            # Compute next Q value based on which action gives max Q values
+            # Detach variable from the current graph since we don't want gradients for next Q to propagated
+            q_a_vales_tp1 = target_q_values(obs_tp1_batch).detach().max(1)[0]
+            q_a_vales_tp1 = not_done_mask * q_a_vales_tp1
+            # Compute the target of the current Q values
+            target_values = rew_batch + (gamma * q_a_vales_tp1)
+            # Compute Bellman error
+            loss = (target_values - q_a_values).pow(2).sum()
+            if t % LOG_EVERY_N_STEPS == 0:
+                print "loss at {} : {}".format(t, loss.data[0])
+            # clip the bellman error between [-1 , 1]
+            # clipped_bellman_error = bellman_error.clamp(-1, 1)
+            # # Note: clipped_bellman_delta * -1 will be right gradient
+            # d_error = clipped_bellman_error * -1.0
+            # # Clear previous gradients before backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            # # run backward pass
+            # q_a_values.backward(d_error.data.unsqueeze(1))
 
+            # Perfom the update
+            optimizer.step()
+            num_param_updates += 1
             # 3.d: update the target network
             if t%target_update_freq==0:
-                session.run(update_target_fn)
+                target_q_values.load_state_dict(q_values.state_dict())
+                # session.run(update_target_fn)
 
             #####
 
@@ -332,20 +358,20 @@ def learn(env,
             mean_episode_reward = np.mean(episode_rewards[-100:])
         if len(episode_rewards) > 100:
             best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
-        if t % LOG_EVERY_N_STEPS == 0 and model_initialized:
+        if t % LOG_EVERY_N_STEPS == 0:#        and model_initialized:
             print("Timestep %d" % (t,))
             print("mean reward (100 episodes) %f" % mean_episode_reward)
             print("best mean reward %f" % best_mean_episode_reward)
             print("episodes %d" % len(episode_rewards))
             print("exploration %f" % exploration.value(t))
-            print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
+            # print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
 
             time_plot.append(t)
             mean_episode_reward_plot.append(mean_episode_reward)
             best_mean_episode_reward_plot.append(best_mean_episode_reward)
             episode_plot.append(len(episode_rewards))
             exploration_t_plot.append(exploration.value(t)) 
-            learning_rate_plot.append(optimizer_spec.lr_schedule.value(t))
+            # learning_rate_plot.append(optimizer_spec.lr_schedule.value(t))
 
             sys.stdout.flush()
             # Plotting
@@ -354,8 +380,9 @@ def learn(env,
                            'mean_episode_reward_plot': np.array(mean_episode_reward_plot),
                            'best_mean_episode_reward_plot': np.array(best_mean_episode_reward_plot),
                            'episode_plot': np.array(episode_plot),
-                           'exploration_t_plot': np.array(exploration_t_plot),
-                           'learning_rate_plot': np.array(learning_rate_plot)}
+                           'exploration_t_plot': np.array(exploration_t_plot)}
+                           # ,
+                           # 'learning_rate_plot': np.array(learning_rate_plot)
             f = open('q2_1_lr3_data.p', 'w')
 
             pickle.dump(q1_data_all, f)
