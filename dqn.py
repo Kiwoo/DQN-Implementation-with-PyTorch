@@ -3,8 +3,6 @@ import  gym.spaces
 import  itertools
 import  numpy                       as np
 import  random
-# import  tensorflow                  as tf
-# import  tensorflow.contrib.layers   as layers
 from    collections                 import namedtuple
 from    dqn_utils                   import *
 import pickle
@@ -131,28 +129,11 @@ def learn(env,
     exploration_t_plot              = []
     learning_rate_plot              = []
 
-
-
-    # construct optimization op (with gradient clipping)
-    # learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
-    # optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
-    # train_fn = minimize_and_clip(optimizer, total_error,
-    #              var_list=q_func_vars, clip_val=grad_norm_clipping)
-
-    # # update_target_fn will be called periodically to copy Q network to target Q network
-    # update_target_fn = []
-    # for var, var_target in zip(sorted(q_func_vars,        key=lambda v: v.name),
-    #                            sorted(target_q_func_vars, key=lambda v: v.name)):
-    #     update_target_fn.append(var_target.assign(var))
-    # update_target_fn = tf.group(*update_target_fn)
-
-    # construct the replay buffer
-    
+ 
 
     ###############
     # RUN ENV     #
     ###############
-    # model_initialized = True
     num_param_updates = 0
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
@@ -161,69 +142,12 @@ def learn(env,
     SAVE_EVERY_N_STEPS       = 100000 
 
     for t in itertools.count():
-        ### 1. Check stopping criterion
         if stopping_criterion is not None and stopping_criterion(env, t):
             break
 
-        ### 2. Step the env and store the transition
-        # At this point, "last_obs" contains the latest observation that was
-        # recorded from the simulator. Here, your code needs to store this
-        # observation and its outcome (reward, next observation, etc.) into
-        # the replay buffer while stepping the simulator forward one step.
-        # At the end of this block of code, the simulator should have been
-        # advanced one step, and the replay buffer should contain one more
-        # transition.
-        # Specifically, last_obs must point to the new latest observation.
-        # Useful functions you'll need to call:
-        # obs, reward, done, info = env.step(action)
-        # this steps the environment forward one step
-        # obs = env.reset()
-        # this resets the environment if you reached an episode boundary.
-        # Don't forget to call env.reset() to get a new observation if done
-        # is true!!
-        # Note that you cannot use "last_obs" directly as input
-        # into your network, since it needs to be processed to include context
-        # from previous frames. You should check out the replay buffer
-        # implementation in dqn_utils.py to see what functionality the replay
-        # buffer exposes. The replay buffer has a function called
-        # encode_recent_observation that will take the latest observation
-        # that you pushed into the buffer and compute the corresponding
-        # input that should be given to a Q network by appending some
-        # previous frames.
-        # Don't forget to include epsilon greedy exploration!
-        # And remember that the first time you enter this loop, the model
-        # may not yet have been initialized (but of course, the first step
-        # might as well be random, since you haven't trained your net...)
-
-        #####
-        
-        # YOUR CODE HERE
-        # It seems like Tensorflow version >= 1.0 support interdependent variable initialization. Right?
-
-        # if model_initialized == False:
-        #     session.run(tf.global_variables_initializer())
-        #     model_initialized = True
-
         ret = replay_buffer.store_frame( last_obs )
-
         obs = replay_buffer.encode_recent_observation()
-
-        # q_value = q_func(Variable((torch.from_numpy(obs).type(dtype).unsqueeze(0) / 255.0), volatile = True))
-        # argmax_action = q_value.data.max(1)[1].cpu()
-      
-        # # q_value = session.run(q_values, {obs_t_ph: [obs]})
-        # # argmax_action = np.argmax(q_value)
-
-        # epsilon = exploration.value(t)
-        # prob_action = np.ones(num_actions, dtype=float) * epsilon / (num_actions-1)
-        # prob_action[argmax_action] = 1-epsilon
-
-        # action = np.random.choice(np.arange(num_actions), p=np.squeeze(prob_action) )
         action = select_epilson_greedy_action(q_values, obs, t)[0, 0]
-        # if t > learning_starts:
-        #     action = select_epilson_greedy_action(q_values, obs, t)[0, 0]
-        # else:
-        #     action = random.randrange(num_actions)
 
         last_obs, reward, done, _ = env.step(action)
 
@@ -233,122 +157,39 @@ def learn(env,
         replay_buffer.store_effect(ret, action, reward, done)
 
         #####
-
-        # at this point, the environment should have been advanced one step (and
-        # reset if done was true), and last_obs should point to the new latest
-        # observation
-
-        ### 3. Perform experience replay and train the network.
-        # note that this is only done if the replay buffer contains enough samples
-        # for us to learn something useful -- until then, the model will not be
-        # initialized and random actions should be taken
         if (t > learning_starts and
                 t % learning_freq == 0 and
                 replay_buffer.can_sample(batch_size)):
-            # Here, you should perform training. Training consists of four steps:
-            # 3.a: use the replay buffer to sample a batch of transitions (see the
-            # replay buffer code for function definition, each batch that you sample
-            # should consist of current observations, current actions, rewards,
-            # next observations, and done indicator).
-            # 3.b: initialize the model if it has not been initialized yet; to do
-            # that, call
-            #    initialize_interdependent_variables(session, tf.global_variables(), {
-            #        obs_t_ph: obs_t_batch,
-            #        obs_tp1_ph: obs_tp1_batch,
-            #    })
-            # where obs_t_batch and obs_tp1_batch are the batches of observations at
-            # the current and next time step. The boolean variable model_initialized
-            # indicates whether or not the model has been initialized.
-            # Remember that you have to update the target network too (see 3.d)!
-            # 3.c: train the model. To do this, you'll need to use the train_fn and
-            # total_error ops that were created earlier: total_error is what you
-            # created to compute the total Bellman error in a batch, and train_fn
-            # will actually perform a gradient step and update the network parameters
-            # to reduce total_error. When calling session.run on these you'll need to
-            # populate the following placeholders:
-            # obs_t_ph
-            # act_t_ph
-            # rew_t_ph
-            # obs_tp1_ph
-            # done_mask_ph
-            # (this is needed for computing total_error)
-            # learning_rate -- you can get this from optimizer_spec.lr_schedule.value(t)
-            # (this is needed by the optimizer to choose the learning rate)
-            # 3.d: periodically update the target network by calling
-            # session.run(update_target_fn)
-            # you should update every target_update_freq steps, and you may find the
-            # variable num_param_updates useful for this (it was initialized to 0)
-            #####
-            
-            # YOUR CODE HERE
 
-            # 3.a: sample a batch of transitions
-
-            # obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
             obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
-            # Convert numpy nd_array to torch variables for calculation
-            obs_t_batch = Variable(torch.from_numpy(obs_t_batch).type(dtype) / 255.0)
-            act_batch = Variable(torch.from_numpy(act_batch).long())
-            rew_batch = Variable(torch.from_numpy(rew_batch))
-            obs_tp1_batch = Variable(torch.from_numpy(obs_tp1_batch).type(dtype) / 255.0)
-            not_done_mask = Variable(torch.from_numpy(1 - done_mask)).type(dtype)
+
+            obs_t_batch     = Variable(torch.from_numpy(obs_t_batch).type(dtype) / 255.0)
+            act_batch       = Variable(torch.from_numpy(act_batch).long())
+            rew_batch       = Variable(torch.from_numpy(rew_batch))
+            obs_tp1_batch   = Variable(torch.from_numpy(obs_tp1_batch).type(dtype) / 255.0)
+            done_mask       = Variable(torch.from_numpy(done_mask)).type(dtype)
 
             if USE_CUDA:
                 act_batch = act_batch.cuda()
                 rew_batch = rew_batch.cuda()
 
-            # 3.b: initialize model
-            
-            # change to global variable initializer above.
+            # train the model
 
-            # 3.c: train the model
-
-
-
-
-            # feed_dict = {obs_t_ph: obs_t_batch, 
-            #              act_t_ph:       act_batch, 
-            #                 rew_t_ph:       rew_batch, 
-            #                 obs_tp1_ph:     obs_tp1_batch, 
-            #                 done_mask_ph:   done_mask,
-            #                 learning_rate:  optimizer_spec.lr_schedule.value(t)  }
-
-            # session.run( [train_fn, total_error], feed_dict={obs_t_ph: obs_t_batch, 
-            #                                                  act_t_ph: act_batch, 
-            #                                                  rew_t_ph: rew_batch, 
-            #                                                  obs_tp1_ph: obs_tp1_batch, 
-            #                                                  done_mask_ph: done_mask,
-            #                                                  learning_rate: optimizer_spec.lr_schedule.value(t)})
-            # Compute current Q value, q_func takes only state and output value for every state-action pair
-            # We choose Q based on action taken.
             q_a_values = q_values(obs_t_batch).gather(1, act_batch.unsqueeze(1))
-            # Compute next Q value based on which action gives max Q values
-            # Detach variable from the current graph since we don't want gradients for next Q to propagated
             q_a_vales_tp1 = target_q_values(obs_tp1_batch).detach().max(1)[0]
-            q_a_vales_tp1 = not_done_mask * q_a_vales_tp1
-            # Compute the target of the current Q values
-            target_values = rew_batch + (gamma * q_a_vales_tp1)
-            # Compute Bellman error
+            # q_a_vales_tp1 = not_done_mask * q_a_vales_tp1
+            target_values = rew_batch + (gamma * (1-done_mask) * q_a_vales_tp1)
             loss = (target_values - q_a_values).pow(2).sum()
             if t % LOG_EVERY_N_STEPS == 0:
                 print "loss at {} : {}".format(t, loss.data[0])
-            # clip the bellman error between [-1 , 1]
-            # clipped_bellman_error = bellman_error.clamp(-1, 1)
-            # # Note: clipped_bellman_delta * -1 will be right gradient
-            # d_error = clipped_bellman_error * -1.0
-            # # Clear previous gradients before backward pass
             optimizer.zero_grad()
             loss.backward()
-            # # run backward pass
-            # q_a_values.backward(d_error.data.unsqueeze(1))
-
-            # Perfom the update
             optimizer.step()
             num_param_updates += 1
-            # 3.d: update the target network
+
+            # update the target network
             if t%target_update_freq==0:
                 target_q_values.load_state_dict(q_values.state_dict())
-                # session.run(update_target_fn)
 
             #####
 
